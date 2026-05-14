@@ -304,7 +304,7 @@ if not df.empty:
     try:
         sp500_vol_raw = yf.download("^GSPC", start=SP500_START_DATE, progress=False, auto_adjust=True)
         if not sp500_vol_raw.empty:
-            sp500_close = ensure_today_close_series(sp500_vol_raw["Close"].dropna(), "^GSPC")
+            sp500_close = ensure_today_close_series(pd.Series(sp500_vol_raw["Close"].values.flatten(), index=sp500_vol_raw.index).dropna(), "^GSPC")
             sp500_returns = sp500_close.pct_change().dropna()
             sp500_vol = float(sp500_returns.std()) * 100
             sp500_growth = float((sp500_close.iloc[-1] / sp500_close.iloc[0] - 1) * 100)
@@ -329,7 +329,7 @@ if not df.empty:
     try:
         usd_vol_raw = yf.download("USDKRW=X", start=SP500_START_DATE, progress=False, auto_adjust=True)
         if not usd_vol_raw.empty:
-            usd_close = ensure_today_close_series(usd_vol_raw["Close"].dropna(), "USDKRW=X")
+            usd_close = ensure_today_close_series(pd.Series(usd_vol_raw["Close"].values.flatten(), index=usd_vol_raw.index).dropna(), "USDKRW=X")
             usd_returns = usd_close.pct_change().dropna()
             usd_vol = float(usd_returns.std()) * 100
             usd_growth = float((usd_close.iloc[-1] / usd_close.iloc[0] - 1) * 100)
@@ -354,7 +354,7 @@ if not df.empty:
     try:
         btc_vol_raw = yf.download("BTC-USD", start=SP500_START_DATE, progress=False, auto_adjust=True)
         if not btc_vol_raw.empty:
-            btc_close = ensure_today_close_series(btc_vol_raw["Close"].dropna(), "BTC-USD")
+            btc_close = ensure_today_close_series(pd.Series(btc_vol_raw["Close"].values.flatten(), index=btc_vol_raw.index).dropna(), "BTC-USD")
             btc_returns = btc_close.pct_change().dropna()
             btc_vol = float(btc_returns.std()) * 100
             btc_growth = float((btc_close.iloc[-1] / btc_close.iloc[0] - 1) * 100)
