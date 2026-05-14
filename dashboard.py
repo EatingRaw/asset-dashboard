@@ -1,11 +1,8 @@
 import streamlit as st
 import pandas as pd
 import os
-from dotenv import load_dotenv
 import plotly.express as px
 import yfinance as yf
-
-load_dotenv()
 
 st.set_page_config(page_title="NONE DASHBOARD", page_icon="📈")
 
