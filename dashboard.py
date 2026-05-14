@@ -7,7 +7,7 @@ import yfinance as yf
 st.set_page_config(page_title="NONE DASHBOARD", page_icon="📈")
 
 # Configuration
-BASELINE_DATE = pd.Timestamp("2026-04-06")
+BASELINE_DATE = pd.Timestamp("2026-05-14")
 
 st.title("🎢 None Festival")
 st.subheader("Leaderboard: Who is the Growth King? :)")
