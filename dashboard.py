@@ -22,7 +22,6 @@ def get_market_close_time_kst(dt):
     try:
         et_tz = pytz.timezone('US/Eastern')
         kst_tz = pytz.timezone('Asia/Seoul')
-        # 매일 오후 5시(ET) 기준 (장 마감 16:00 + 1시간)
         et_time = et_tz.localize(datetime(dt.year, dt.month, dt.day, 17, 0, 0))
         kst_time = et_time.astimezone(kst_tz)
         return kst_time
@@ -41,18 +40,32 @@ except:
     df_user = pd.DataFrame()
 
 # 비교 데이터 불러오기 함수
-@st.cache_data(ttl=3600) # 1시간마다 캐시 갱신
+@st.cache_data(ttl=3600)
 def fetch_comparison(ticker, name, start_date):
     try:
         fetch_start = start_date - pd.Timedelta(days=5)
+        # auto_adjust=True 와 MultiIndex 처리
         raw = yf.download(ticker, start=fetch_start.strftime("%Y-%m-%d"), progress=False, auto_adjust=True)
         if raw.empty: return pd.DataFrame()
         
-        data = raw[["Close"]].copy()
+        # yfinance 최신 버전에서는 MultiIndex로 올 수 있으므로 'Close' 컬럼만 추출
+        if "Close" in raw.columns:
+            data = raw["Close"]
+        else:
+            # MultiIndex 케이스 (Price, Ticker)
+            data = raw.xs('Close', axis=1, level=0)
+            
+        # Series인 경우 DataFrame으로 변환
+        if isinstance(data, pd.Series):
+            data = data.to_frame()
+            
+        # 첫 번째 컬럼(해당 티커)만 사용
+        close_prices = data.iloc[:, 0]
+        
         new_rows = []
-        for dt, row in data.iterrows():
+        for dt, price in close_prices.items():
             kst_close = get_market_close_time_kst(dt)
-            new_rows.append({"amount": float(row["Close"]), "name": name, "date": kst_close})
+            new_rows.append({"amount": float(price), "name": name, "date": kst_close})
         
         res = pd.DataFrame(new_rows)
         # 현재 실시간 가격 추가
@@ -89,14 +102,11 @@ for ticker, name in comparison_list:
 if all_dfs:
     df = pd.concat(all_dfs, ignore_index=True)
     df['name'] = df['name'].astype(str).str.strip()
-    
-    # 기준일 필터링 (시간대 정보 제거 후 비교)
     df = df[df['date'].dt.tz_localize(None) >= BASELINE_DATE].copy()
     
     if df.empty:
         st.warning("기준일(2026-05-15) 이후의 데이터가 없습니다.")
     else:
-        # 수익률 계산
         baselines = {}
         for name in df['name'].unique():
             sub = df[df['name'] == name].sort_values('date')
@@ -109,10 +119,7 @@ if all_dfs:
         )
         df['growth_rate_pct'] = (df['growth_rate'] - 1) * 100
 
-        # 최신 상태
         latest_all = df.sort_values(by='date').groupby('name').tail(1).sort_values(by='growth_rate_pct', ascending=False)
-        
-        # 왕관/거북이 이모지 설정
         crown_name = latest_all.iloc[0]['name']
         turtle_name = latest_all.iloc[-1]['name']
         
@@ -121,7 +128,6 @@ if all_dfs:
             if n == turtle_name: return f"🐢 {n}"
             return n
 
-        # 1. 리더보드 지표 (전체 항목 표시)
         st.subheader("🏆 리더보드")
         cols = st.columns(len(latest_all))
         for i, (idx, row) in enumerate(latest_all.iterrows()):
@@ -129,46 +135,27 @@ if all_dfs:
                 baseline = baselines.get(row['name'], row['amount'])
                 net_change = row['amount'] - baseline
                 label = get_display_name(row['name'])
-                
                 if "S&P 500" in row['name'] or "비트코인" in row['name']:
                     delta_val = f"{net_change:+.2f} USD"
                 elif "USD/KRW" in row['name']:
                     delta_val = f"{net_change:+.2f} KRW"
                 else:
-                    # 사용자 데이터
                     delta_val = f"${net_change:+.2f} USD"
-                
-                st.metric(
-                    label=label,
-                    value=f"{row['growth_rate_pct']:.2f}%",
-                    delta=delta_val,
-                    help=f"기록시간: {row['date'].strftime('%m/%d %H:%M')}"
-                )
+                st.metric(label=label, value=f"{row['growth_rate_pct']:.2f}%", delta=delta_val, help=f"기록시간: {row['date'].strftime('%m/%d %H:%M')}")
 
         st.divider()
-
-        # 2. 수익률 차트 (전체 항목 표시)
         st.subheader("🏎️ 수익률 레이스")
         df_chart_data = df.copy()
-        
-        # 시작점(0%) 추가
         start_date = df_chart_data['date'].min() - pd.Timedelta(days=1)
         start_points = []
         for name in df_chart_data['name'].unique():
             start_points.append({'name': name, 'date': start_date, 'amount': baselines.get(name, 0), 'growth_rate': 1.0, 'growth_rate_pct': 0.0})
-        
         df_chart = pd.concat([pd.DataFrame(start_points), df_chart_data], ignore_index=True).sort_values(by='date')
         df_chart['이름'] = df_chart['name'].apply(get_display_name)
-
-        fig = px.line(
-            df_chart, x='date', y='growth_rate_pct', color='이름', markers=True,
-            title="시간 경과에 따른 수익률 비교", 
-            labels={'growth_rate_pct': '수익률 (%)', 'date': '날짜', '이름': '참가자'}
-        )
+        fig = px.line(df_chart, x='date', y='growth_rate_pct', color='이름', markers=True, title="시간 경과에 따른 수익률 비교", labels={'growth_rate_pct': '수익률 (%)', 'date': '날짜', '이름': '참가자'})
         fig.update_layout(yaxis_ticksuffix="%")
         st.plotly_chart(fig, use_container_width=True)
 
-        # 3. 변동성 분석 테이블 (전체 항목 표시)
         st.subheader("📊 종합 변동성 분석")
         vol_rows = []
         for name in latest_all['name']:
@@ -177,19 +164,10 @@ if all_dfs:
             if len(sub) < 2:
                 vol_rows.append({"이름": display, "현재 수익률": f"{sub.iloc[-1]['growth_rate_pct']:+.2f}%", "일일 수익": "N/A", "변동성": "N/A", "MDD": "N/A"})
                 continue
-            
             d_ret = (sub.iloc[-1]['amount'] / sub.iloc[-2]['amount'] - 1) * 100
             vol = sub['growth_rate'].pct_change().std() * 100
             mdd = ((sub['growth_rate'] - sub['growth_rate'].cummax()) / sub['growth_rate'].cummax()).min() * 100
-            
-            vol_rows.append({
-                "이름": display,
-                "현재 수익률": f"{sub.iloc[-1]['growth_rate_pct']:+.2f}%",
-                "일일 수익": f"{d_ret:+.2f}%",
-                "변동성": f"{vol:.2f}%",
-                "MDD": f"{mdd:.2f}%"
-            })
+            vol_rows.append({"이름": display, "현재 수익률": f"{sub.iloc[-1]['growth_rate_pct']:+.2f}%", "일일 수익": f"{d_ret:+.2f}%", "변동성": f"{vol:.2f}%", "MDD": f"{mdd:.2f}%"})
         st.table(pd.DataFrame(vol_rows))
-
 else:
     st.info("데이터를 불러오는 중입니다... 잠시만 기다려주세요.")
