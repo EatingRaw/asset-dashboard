@@ -17,18 +17,16 @@ st.subheader("누가 가장 많이 벌었을까요? :)")
 
 import sqlite3
 
-# 날짜 표시 변환 함수 (DB의 'YYYY-MM-DD'를 해당 거래일의 KST 장마감 시간으로 변환)
-def convert_to_kst_morning(date_str):
+# 날짜 표시 변환 함수 (거래일 -> KST 오전)
+def convert_to_kst_morning(date_dt):
     try:
-        dt = pd.to_datetime(date_str)
         et_tz = pytz.timezone('US/Eastern')
         kst_tz = pytz.timezone('Asia/Seoul')
         # 미국 장 마감 16:00 + 1시간 = 17:00 (ET)
-        # 이 시간은 한국 시간으로 다음 날 오전 6시(서머타임) 또는 7시임
-        et_time = et_tz.localize(datetime(dt.year, dt.month, dt.day, 17, 0, 0))
+        et_time = et_tz.localize(datetime(date_dt.year, date_dt.month, date_dt.day, 17, 0, 0))
         return et_time.astimezone(kst_tz)
     except:
-        return pd.to_datetime(date_str)
+        return date_dt
 
 # 사용자 데이터 불러오기
 try:
@@ -45,7 +43,6 @@ except:
 @st.cache_data(ttl=600)
 def fetch_comparison(ticker, name, start_date):
     try:
-        # 기준일 이전 데이터부터 가져와서 기준일 시점의 종가를 확보
         fetch_start = start_date - pd.Timedelta(days=5)
         raw = yf.download(ticker, start=fetch_start.strftime("%Y-%m-%d"), progress=False, auto_adjust=True)
         if raw.empty: return pd.DataFrame()
@@ -55,9 +52,13 @@ def fetch_comparison(ticker, name, start_date):
             data = data.iloc[:, 0]
             
         new_rows = []
+        now_kst = datetime.now(pytz.timezone('Asia/Seoul'))
+        
         for dt, price in data.items():
-            # US 거래일 dt의 마감 시간 -> KST 오전
             kst_time = convert_to_kst_morning(dt)
+            # 현재 시간보다 미래(내일 아침 등)는 제외
+            if kst_time > now_kst:
+                continue
             new_rows.append({"amount": float(price), "name": name, "date": kst_time})
         
         return pd.DataFrame(new_rows)
@@ -75,10 +76,13 @@ all_dfs = []
 
 # 1. 사용자 데이터 처리
 if not df_user.empty:
-    # 5/15일 데이터는 사용자가 현금을 보유한 '시작 시점'이므로 
-    # 5/15 06:00 (목요일 장마감 결과)가 아니라 5/15 저녁으로 간주해야 함
-    # 하지만 단순화를 위해 DB 날짜를 거래일로 보고 KST 오전으로 변환
-    df_user['date'] = df_user['date'].apply(convert_to_kst_morning)
+    df_user['date_dt'] = pd.to_datetime(df_user['date'])
+    df_user['date'] = df_user['date_dt'].apply(convert_to_kst_morning)
+    
+    # 미래 데이터 제외
+    now_kst = datetime.now(pytz.timezone('Asia/Seoul'))
+    df_user = df_user[df_user['date'] <= now_kst]
+    
     df_user = df_user.sort_values('date').drop_duplicates(subset=['name', 'date'], keep='last')
     all_dfs.append(df_user[['name', 'date', 'amount']])
 
@@ -92,14 +96,13 @@ if all_dfs:
     df = pd.concat(all_dfs, ignore_index=True)
     df['name'] = df['name'].astype(str).str.strip()
     
-    # KST 오전 시간 기준으로 5/15 06:00 이후 데이터 필터링
-    # 5/15 데이터(목요일 장 결과)가 기준점이 됨
+    # 기준일(5/15) 이후 데이터 필터링
     df = df[df['date'].dt.tz_localize(None) >= BASELINE_DATE].copy()
     
     if df.empty:
         st.warning("데이터가 없습니다.")
     else:
-        # 수익률 계산 (각 항목의 가장 빠른 데이터를 1.0으로 설정)
+        # 수익률 계산
         baselines = {}
         for name in df['name'].unique():
             sub = df[df['name'] == name].sort_values('date')
@@ -108,7 +111,7 @@ if all_dfs:
         df['growth_rate'] = df.apply(lambda r: r['amount'] / baselines[r['name']], axis=1)
         df['growth_rate_pct'] = (df['growth_rate'] - 1) * 100
 
-        # 최신 데이터 정렬
+        # 최신 데이터
         latest_all = df.sort_values(by='date').groupby('name').tail(1).sort_values(by='growth_rate_pct', ascending=False)
         crown_name = latest_all.iloc[0]['name']
         turtle_name = latest_all.iloc[-1]['name']
@@ -145,7 +148,7 @@ if all_dfs:
         
         fig = px.line(
             df_chart, x='date', y='growth_rate_pct', color='참가자', markers=True,
-            title="수익률 추이 (기준: 5/15)",
+            title="수익률 추이 (5/15 ~ 현재)",
             labels={'growth_rate_pct': '수익률 (%)', 'date': '날짜'}
         )
         fig.update_layout(yaxis_ticksuffix="%")
@@ -158,7 +161,7 @@ if all_dfs:
             sub = df[df['name'] == name].sort_values('date')
             display = get_display_name(name)
             if len(sub) < 2:
-                vol_rows.append({"이름": display, "수익률": f"{sub.iloc[-1]['growth_rate_pct']:+.2f}%", "일일 수익": "0.00%", "변동성": "0.00%", "MDD": "0.00%"})
+                vol_rows.append({"이름": display, "현재 수익률": f"{sub.iloc[-1]['growth_rate_pct']:+.2f}%", "일일 수익": "0.00%", "변동성": "0.00%", "MDD": "0.00%"})
                 continue
             
             d_ret = (sub.iloc[-1]['amount'] / sub.iloc[-2]['amount'] - 1) * 100
