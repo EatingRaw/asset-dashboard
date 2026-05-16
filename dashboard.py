@@ -3,6 +3,8 @@ import pandas as pd
 import os
 import plotly.express as px
 import yfinance as yf
+from datetime import datetime, timedelta
+import pytz
 
 st.set_page_config(page_title="NONE DASHBOARD", page_icon="📈")
 
@@ -13,6 +15,20 @@ st.title("🎢 None Festival")
 st.subheader("Leaderboard: Who is the Growth King? :)")
 
 import sqlite3
+
+# Helper to determine market close + 1 hour in KST
+def get_market_close_time_kst(dt):
+    # US Market closes at 16:00 ET. 
+    # Market Close + 1h = 17:00 ET.
+    # Convert 17:00 ET to KST.
+    et_tz = pytz.timezone('US/Eastern')
+    kst_tz = pytz.timezone('Asia/Seoul')
+    
+    # Create 17:00 ET for the given date
+    et_time = et_tz.localize(datetime(dt.year, dt.month, dt.day, 17, 0, 0))
+    # Convert to KST
+    kst_time = et_time.astimezone(kst_tz)
+    return kst_time
 
 # Fetch User Data
 try:
@@ -31,18 +47,24 @@ def fetch_comparison(ticker, name, start_date):
         raw = yf.download(ticker, start=start_date.strftime("%Y-%m-%d"), progress=False, auto_adjust=True)
         if raw.empty: return pd.DataFrame()
         data = raw[["Close"]].copy()
-        data.index = pd.to_datetime(data.index).tz_localize(None).normalize() + pd.Timedelta(hours=16, minutes=30)
-        data.columns = ["amount"]
-        data["name"] = name
-        data["date"] = data.index
+        
+        # Correctly align comparison data to Market Close + 1h KST
+        new_rows = []
+        for dt, row in data.iterrows():
+            kst_close = get_market_close_time_kst(dt)
+            new_rows.append({"amount": float(row["Close"]), "name": name, "date": kst_close})
+        
+        res = pd.DataFrame(new_rows)
+        
         # Ensure today's price is included
-        today_1630 = pd.Timestamp.now().normalize() + pd.Timedelta(hours=16, minutes=30)
-        if today_1630 not in data.index:
+        last_dt = data.index[-1]
+        today_close = get_market_close_time_kst(datetime.now())
+        if today_close > res["date"].max():
             last_price = yf.Ticker(ticker).fast_info.last_price
             if last_price:
-                patch = pd.DataFrame([{"amount": float(last_price), "name": name, "date": today_1630}], index=[today_1630])
-                data = pd.concat([data, patch]).sort_index()
-        return data
+                res = pd.concat([res, pd.DataFrame([{"amount": float(last_price), "name": name, "date": today_close}])])
+        
+        return res
     except: return pd.DataFrame()
 
 # Load all data
@@ -54,7 +76,9 @@ comparison_list = [
 
 all_dfs = []
 if not df_user.empty:
-    df_user['date'] = pd.to_datetime(df_user['date']).dt.normalize() + pd.Timedelta(hours=16, minutes=30)
+    # Align User Data to Market Close + 1h KST
+    df_user['date_dt'] = pd.to_datetime(df_user['date'])
+    df_user['date'] = df_user['date_dt'].apply(lambda x: get_market_close_time_kst(x))
     df_user = df_user.sort_values('date').drop_duplicates(subset=['name', 'date'], keep='last')
     all_dfs.append(df_user[['name', 'date', 'amount']])
 
@@ -65,7 +89,8 @@ for ticker, name in comparison_list:
 
 if all_dfs:
     df = pd.concat(all_dfs, ignore_index=True)
-    df = df[df['date'] >= BASELINE_DATE].copy()
+    # Filter by BASELINE_DATE (normalize to midnight for comparison)
+    df = df[df['date'].dt.tz_localize(None) >= BASELINE_DATE].copy()
     
     # Calculate Growth
     baselines = {}
@@ -80,7 +105,7 @@ if all_dfs:
     )
     df['growth_rate_pct'] = (df['growth_rate'] - 1) * 100
 
-    # 1. Leaderboard Metrics - SHOW ONLY USER
+    # 1. Leaderboard Metrics
     st.markdown("### 👤 User Status")
     user_names = [n for n in df['name'].unique() if n not in ["S&P 500 (VOO)", "Bitcoin", "USD/KRW"]]
     if user_names:
@@ -99,14 +124,14 @@ if all_dfs:
                     label=row['name'],
                     value=f"{row['growth_rate_pct']:.2f}%",
                     delta=f"${net_change:,.2f} USD",
-                    help=f"약 {net_profit_krw:,.0f} KRW"
+                    help=f"약 {net_profit_krw:,.0f} KRW (기록시간: {row['date'].strftime('%Y-%m-%d %H:%M')})"
                 )
     else:
         st.info("사용자 데이터가 없습니다.")
 
     st.divider()
 
-    # 2. Growth Chart - SHOW 4 ITEMS WITH CROWN/TURTLE
+    # 2. Growth Chart
     st.subheader("Growth Race 🏎️")
     latest_all = df.sort_values(by='date').groupby('name').tail(1).sort_values(by='growth_rate_pct', ascending=False)
     crown_name = latest_all.iloc[0]['name']
@@ -134,11 +159,11 @@ if all_dfs:
     fig.add_hline(y=0.0, line_dash="dash", line_color="lightgray")
     st.plotly_chart(fig, use_container_width=True)
 
-    # 3. Volatility Table - SHOW ALL 4 ITEMS
+    # 3. Volatility Table
     st.divider()
     st.subheader("종합 변동성 분석 📊")
     volatility_rows = []
-    for name in latest_all['name']: # Use latest_all order (ranked)
+    for name in latest_all['name']:
         user_df_sub = df[df['name'] == name].sort_values('date')
         latest_pct = (user_df_sub.iloc[-1]['growth_rate'] - 1) * 100
         display_name = get_display_name(name)
