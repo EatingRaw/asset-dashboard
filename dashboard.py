@@ -6,8 +6,8 @@ import yfinance as yf
 
 st.set_page_config(page_title="NONE DASHBOARD", page_icon="📈")
 
-# Configuration
-BASELINE_DATE = pd.Timestamp("2026-05-14")
+# Configuration - 미국 주식 시스템 시작일로 기준점 변경
+BASELINE_DATE = pd.Timestamp("2026-05-16")
 
 st.title("🎢 None Festival")
 st.subheader("Leaderboard: Who is the Growth King? :)")
@@ -37,208 +37,79 @@ if not df.empty:
     else:
         df = df.drop_duplicates(subset=['name', 'date'], keep='last')
 
-    # Rebase to BASELINE_DATE: each user's earliest record on/after BASELINE_DATE becomes 1.0
+    # Rebase to BASELINE_DATE
     df = df[df['date'] >= BASELINE_DATE].copy()
 
-    baselines = {}
-    for name in df['name'].unique():
-        user_df = df[df['name'] == name].sort_values('date')
-        if not user_df.empty:
-            baselines[name] = user_df.iloc[0]['amount']
+    if df.empty:
+        st.info("오늘 데이터가 아직 집계되지 않았거나 BASELINE_DATE 이후 데이터가 없습니다.")
+    else:
+        baselines = {}
+        for name in df['name'].unique():
+            user_df = df[df['name'] == name].sort_values('date')
+            if not user_df.empty:
+                baselines[name] = user_df.iloc[0]['amount']
 
-    df['growth_rate'] = df.apply(
-        lambda r: r['amount'] / baselines[r['name']] if baselines.get(r['name']) else 1.0,
-        axis=1,
-    )
-
-    # 1. Leaderboard (Latest Data)
-    latest_df = df.sort_values(by='date').groupby('name').tail(1)
-    latest_df = latest_df.sort_values(by='growth_rate', ascending=False)
-    
-    # Display Metrics
-    cols = st.columns(len(latest_df))
-    for i, (index, row) in enumerate(latest_df.iterrows()):
-        with cols[i]:
-            baseline = baselines.get(row['name'], row['amount'])
-            net_profit = row['amount'] - baseline
-            # USD -> KRW conversion for sub-label
-            try:
-                # Get current USD/KRW rate
-                usd_rate = yf.Ticker("USDKRW=X").fast_info.last_price or 1350
-                net_profit_krw = net_profit * usd_rate
-            except:
-                net_profit_krw = net_profit * 1350
-
-            st.metric(
-                label=f"{i+1}위 {row['name']}",
-                value=f"{(row['growth_rate']-1)*100:.1f}%",
-                delta=f"${net_profit:,.2f} USD",
-                help=f"약 {net_profit_krw:,.0f} KRW (환율반영)"
-            )
-
-    st.divider()
-
-    # 2. Growth Chart (Line Chart starting at 1.0)
-    st.subheader("Growth Race 🏎️")
-    
-    # Sort for graph
-    df_sorted = df.sort_values(by='date')
-    
-    # Add "Start" point (1.0) for better visualization
-    start_date = df_sorted['date'].min() - pd.Timedelta(days=1)
-    start_points = []
-    
-    for name in df['name'].unique():
-        start_points.append({
-            'name': name,
-            'date': start_date,
-            'amount': baselines.get(name, 0),
-            'growth_rate': 1.0
-        })
-    
-    df_start = pd.DataFrame(start_points)
-    df_chart = pd.concat([df_start, df_sorted], ignore_index=True).sort_values(by='date')
-    
-    df_chart = df_chart.copy()
-    df_chart['growth_rate'] = (df_chart['growth_rate'] - 1) * 100
-
-    # 가장 최근 날짜 기준 growth_rate 순위 (S&P 500 제외)
-    non_sp500_latest = df_chart[df_chart['name'] != 'S&P 500'].sort_values('date').groupby('name').tail(1)
-    if not non_sp500_latest.empty:
-        crown_name = non_sp500_latest.sort_values('growth_rate', ascending=False).iloc[0]['name']
-        turtle_name = non_sp500_latest.sort_values('growth_rate', ascending=True).iloc[0]['name']
-        df_chart['name'] = df_chart['name'].apply(
-            lambda n: f"👑 {n}" if n == crown_name else (f"🐢 {n}" if n == turtle_name else n)
+        df['growth_rate'] = df.apply(
+            lambda r: r['amount'] / baselines[r['name']] if baselines.get(r['name']) else 1.0,
+            axis=1,
         )
 
-    fig = px.line(
-        df_chart,
-        x='date',
-        y='growth_rate',
-        color='name',
-        markers=True,
-        title="Asset Growth Rate Over Time",
-        labels={'growth_rate': 'Growth (%)'}
-    )
-    fig.update_layout(yaxis_ticksuffix="%")
+        # 1. Leaderboard (Latest Data)
+        latest_df = df.sort_values(by='date').groupby('name').tail(1)
+        latest_df = latest_df.sort_values(by='growth_rate', ascending=False)
+        
+        # Display Metrics
+        cols = st.columns(len(latest_df))
+        for i, (index, row) in enumerate(latest_df.iterrows()):
+            with cols[i]:
+                baseline = baselines.get(row['name'], row['amount'])
+                net_profit = row['amount'] - baseline
+                # USD -> KRW conversion
+                try:
+                    usd_rate = yf.Ticker("USDKRW=X").fast_info.last_price or 1350
+                    net_profit_krw = net_profit * usd_rate
+                except:
+                    net_profit_krw = net_profit * 1350
 
-    # S&P 500 비교선 추가
-    SP500_START_DATE = BASELINE_DATE.strftime("%Y-%m-%d")
-    TODAY_1630 = pd.Timestamp.now().normalize() + pd.Timedelta(hours=16, minutes=30)
+                st.metric(
+                    label=f"{i+1}위 {row['name']}",
+                    value=f"{(row['growth_rate']-1)*100:.1f}%",
+                    delta=f"${net_profit:,.2f} USD",
+                    help=f"약 {net_profit_krw:,.0f} KRW (실시간 환율 반영)"
+                )
 
-    def ensure_today_bar(close_df, ticker):
-        if TODAY_1630 in close_df.index:
-            return close_df
-        try:
-            last_price = yf.Ticker(ticker).fast_info.last_price
-            if last_price is None or pd.isna(last_price):
-                return close_df
-            patch = pd.DataFrame({"close": [float(last_price)]}, index=[TODAY_1630])
-            return pd.concat([close_df, patch]).sort_index()
-        except Exception:
-            return close_df
+        st.divider()
 
-    try:
-        sp500_raw = yf.download("^GSPC", start=SP500_START_DATE, progress=False, auto_adjust=True)
-        if not sp500_raw.empty:
-            sp500 = sp500_raw[["Close"]].copy()
-            sp500.index = pd.to_datetime(sp500.index)
-            sp500.index = sp500.index.tz_localize(None).normalize() + pd.Timedelta(hours=16, minutes=30)
-            sp500.columns = ["close"]
-            sp500 = sp500.dropna(subset=["close"]).sort_index()
-            sp500 = ensure_today_bar(sp500, "^GSPC")
-
-            start_price = sp500.iloc[0]["close"]
-            sp500["growth_rate"] = (sp500["close"] / start_price - 1) * 100
-
-            start_row = pd.DataFrame([{
-                "growth_rate": 0.0
-            }], index=[pd.Timestamp(SP500_START_DATE) - pd.Timedelta(days=1) + pd.Timedelta(hours=16, minutes=30)])
-            sp500 = pd.concat([start_row, sp500[["growth_rate"]]]).sort_index()
-
-            fig.add_scatter(
-                x=sp500.index,
-                y=sp500["growth_rate"],
-                mode="lines",
-                name="S&P 500",
-                line=dict(color="gray", dash="dot", width=2),
-            )
-    except Exception as e:
-        st.warning(f"⚠️ S&P 500 데이터를 불러오지 못했습니다: {e}")
-
-    # USD/KRW 비교선
-    try:
-        usd_raw = yf.download("USDKRW=X", start=SP500_START_DATE, progress=False, auto_adjust=True)
-        if not usd_raw.empty:
-            usd = usd_raw[["Close"]].copy()
-            usd.index = pd.to_datetime(usd.index)
-            usd.index = usd.index.tz_localize(None).normalize() + pd.Timedelta(hours=16, minutes=30)
-            usd.columns = ["close"]
-            usd = usd.dropna(subset=["close"]).sort_index()
-            usd = ensure_today_bar(usd, "USDKRW=X")
-
-            usd_start_price = usd.iloc[0]["close"]
-            usd["growth_rate"] = (usd["close"] / usd_start_price - 1) * 100
-
-            usd_start_row = pd.DataFrame([{
-                "growth_rate": 0.0
-            }], index=[pd.Timestamp(SP500_START_DATE) - pd.Timedelta(days=1) + pd.Timedelta(hours=16, minutes=30)])
-            usd = pd.concat([usd_start_row, usd[["growth_rate"]]]).sort_index()
-
-            fig.add_scatter(
-                x=usd.index,
-                y=usd["growth_rate"],
-                mode="lines",
-                name="USD/KRW",
-                line=dict(color="green", dash="dot", width=2),
-            )
-    except Exception as e:
-        st.warning(f"⚠️ USD/KRW 데이터를 불러오지 못했습니다: {e}")
-
-    fig.add_hline(y=0.0, line_dash="dash", line_color="lightgray", annotation_text="Start")
-    st.plotly_chart(fig, use_container_width=True)
-
-    # 3. Volatility Comparison Table
-    st.divider()
-    st.subheader("변동성 비교 📊")
-
-    volatility_rows = []
-    for name in df['name'].unique():
-        user_df = df[df['name'] == name].sort_values('date')
-        latest_growth = (user_df.iloc[-1]['growth_rate'] - 1) * 100
-        if len(user_df) < 2:
-            volatility_rows.append({
-                "이름": name,
-                "현재 수익률": f"{latest_growth:+.2f}%",
-                "일일수익률": "N/A",
-                "일간 변동성 (std)": "N/A",
-                "MDD": "N/A",
-                "샤프지수": "N/A",
-                "_volatility_raw": float('inf'),
-                "_growth_raw": latest_growth,
+        # 2. Growth Chart
+        st.subheader("Growth Race 🏎️")
+        df_sorted = df.sort_values(by='date')
+        
+        # Add "Start" point
+        start_date = df_sorted['date'].min() - pd.Timedelta(days=1)
+        start_points = []
+        for name in df['name'].unique():
+            start_points.append({
+                'name': name,
+                'date': start_date,
+                'amount': baselines.get(name, 0),
+                'growth_rate': 1.0
             })
-            continue
-        daily_returns = user_df['growth_rate'].pct_change().dropna()
-        volatility = daily_returns.std() * 100
-        cumulative = user_df['growth_rate']
-        running_max = cumulative.cummax()
-        mdd = ((cumulative - running_max) / running_max).min() * 100
-        sharpe = (daily_returns.mean() / daily_returns.std()) * (252 ** 0.5) if daily_returns.std() > 0 else 0
-        daily_return = (user_df.iloc[-1]['amount'] / user_df.iloc[-2]['amount'] - 1) * 100
-        volatility_rows.append({
-            "이름": name,
-            "현재 수익률": f"{latest_growth:+.2f}%",
-            "일일수익률": f"{daily_return:+.2f}%",
-            "일간 변동성 (std)": f"{volatility:.2f}%",
-            "MDD": f"{mdd:.2f}%",
-            "샤프지수": f"{sharpe:.2f}",
-            "_volatility_raw": volatility,
-            "_growth_raw": latest_growth,
-        })
+        
+        df_start = pd.DataFrame(start_points)
+        df_chart = pd.concat([df_start, df_sorted], ignore_index=True).sort_values(by='date')
+        df_chart['growth_rate_pct'] = (df_chart['growth_rate'] - 1) * 100
 
-    if volatility_rows:
-        vol_df = pd.DataFrame(volatility_rows).sort_values("_growth_raw", ascending=False)
-        vol_df = vol_df.drop(columns=["_volatility_raw", "_growth_raw"])
-        vol_df_display = vol_df.reset_index(drop=True)
-        vol_df_display.index = vol_df_display.index + 1
-        st.table(vol_df_display)
+        fig = px.line(
+            df_chart,
+            x='date',
+            y='growth_rate_pct',
+            color='name',
+            markers=True,
+            title="Asset Growth Rate Over Time",
+            labels={'growth_rate_pct': 'Growth (%)'}
+        )
+        fig.update_layout(yaxis_ticksuffix="%")
+        fig.add_hline(y=0.0, line_dash="dash", line_color="lightgray")
+        st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("데이터가 없습니다. 메인 시스템에서 잔고를 DB에 저장해야 합니다.")
