@@ -45,7 +45,7 @@ def fetch_comparison(ticker, name, start_date):
         return data
     except: return pd.DataFrame()
 
-# Load all data (VOO instead of ^GSPC)
+# Load all data
 comparison_list = [
     ("VOO", "S&P 500 (VOO)"),
     ("BTC-USD", "Bitcoin"),
@@ -134,24 +134,27 @@ if all_dfs:
     fig.add_hline(y=0.0, line_dash="dash", line_color="lightgray")
     st.plotly_chart(fig, use_container_width=True)
 
-    # 3. Volatility Table - SHOW ONLY USER
+    # 3. Volatility Table - SHOW ALL 4 ITEMS
     st.divider()
-    st.subheader("사용자 변동성 분석 📊")
+    st.subheader("종합 변동성 분석 📊")
     volatility_rows = []
-    for name in user_names:
+    for name in latest_all['name']: # Use latest_all order (ranked)
         user_df_sub = df[df['name'] == name].sort_values('date')
         latest_pct = (user_df_sub.iloc[-1]['growth_rate'] - 1) * 100
+        display_name = get_display_name(name)
+        
         if len(user_df_sub) < 2:
-            volatility_rows.append({"이름": name, "수익률(USD)": f"{latest_pct:+.2f}%", "일일수익률": "N/A", "변동성": "N/A", "MDD": "N/A"})
+            volatility_rows.append({"이름": display_name, "수익률": f"{latest_pct:+.2f}%", "일일수익률": "N/A", "변동성": "N/A", "MDD": "N/A"})
             continue
         daily_returns = user_df_sub['growth_rate'].pct_change().dropna()
         volatility = daily_returns.std() * 100
         cumulative = user_df_sub['growth_rate']
         mdd = ((cumulative - cumulative.cummax()) / cumulative.cummax()).min() * 100
         daily_ret = (user_df_sub.iloc[-1]['amount'] / user_df_sub.iloc[-2]['amount'] - 1) * 100
+        
         volatility_rows.append({
-            "이름": name,
-            "수익률(USD)": f"{latest_pct:+.2f}%",
+            "이름": display_name,
+            "수익률": f"{latest_pct:+.2f}%",
             "일일수익률": f"{daily_ret:+.2f}%",
             "변동성": f"{volatility:.2f}%",
             "MDD": f"{mdd:.2f}%"
