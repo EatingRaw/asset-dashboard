@@ -7,7 +7,7 @@ import yfinance as yf
 st.set_page_config(page_title="NONE DASHBOARD", page_icon="📈")
 
 # Configuration - 미국 주식 시스템 시작일로 기준점 변경
-BASELINE_DATE = pd.Timestamp("2026-05-16")
+BASELINE_DATE = pd.Timestamp("2026-05-15")
 
 st.title("🎢 None Festival")
 st.subheader("Leaderboard: Who is the Growth King? :)")
@@ -41,7 +41,7 @@ if not df.empty:
     df = df[df['date'] >= BASELINE_DATE].copy()
 
     if df.empty:
-        st.info("오늘 데이터가 아직 집계되지 않았거나 BASELINE_DATE 이후 데이터가 없습니다.")
+        st.info("지정된 기준일(BASELINE_DATE) 이후의 데이터가 없습니다.")
     else:
         baselines = {}
         for name in df['name'].unique():
@@ -84,7 +84,7 @@ if not df.empty:
         st.subheader("Growth Race 🏎️")
         df_sorted = df.sort_values(by='date')
         
-        # Add "Start" point
+        # Add "Start" point for visualization
         start_date = df_sorted['date'].min() - pd.Timedelta(days=1)
         start_points = []
         for name in df['name'].unique():
@@ -99,17 +99,104 @@ if not df.empty:
         df_chart = pd.concat([df_start, df_sorted], ignore_index=True).sort_values(by='date')
         df_chart['growth_rate_pct'] = (df_chart['growth_rate'] - 1) * 100
 
+        # Rankings for emoji
+        non_sp500_latest = df_chart[~df_chart['name'].str.contains('S&P 500|Bitcoin|USD/KRW')].sort_values('date').groupby('name').tail(1)
+        if not non_sp500_latest.empty:
+            crown_name = non_sp500_latest.sort_values('growth_rate_pct', ascending=False).iloc[0]['name']
+            turtle_name = non_sp500_latest.sort_values('growth_rate_pct', ascending=True).iloc[0]['name']
+            df_chart['name_display'] = df_chart['name'].apply(
+                lambda n: f"👑 {n}" if n == crown_name else (f"🐢 {n}" if n == turtle_name else n)
+            )
+        else:
+            df_chart['name_display'] = df_chart['name']
+
         fig = px.line(
             df_chart,
             x='date',
             y='growth_rate_pct',
-            color='name',
+            color='name_display',
             markers=True,
             title="Asset Growth Rate Over Time",
-            labels={'growth_rate_pct': 'Growth (%)'}
+            labels={'growth_rate_pct': 'Growth (%)', 'name_display': 'Participant'}
         )
         fig.update_layout(yaxis_ticksuffix="%")
+
+        # Add External Comparison Lines
+        SP500_START_DATE = BASELINE_DATE.strftime("%Y-%m-%d")
+        TODAY_1630 = pd.Timestamp.now().normalize() + pd.Timedelta(hours=16, minutes=30)
+
+        def ensure_today_bar(close_df, ticker):
+            if TODAY_1630 in close_df.index: return close_df
+            try:
+                last_price = yf.Ticker(ticker).fast_info.last_price
+                if last_price is None or pd.isna(last_price): return close_df
+                patch = pd.DataFrame({"close": [float(last_price)]}, index=[TODAY_1630])
+                return pd.concat([close_df, patch]).sort_index()
+            except: return close_df
+
+        # S&P 500
+        try:
+            sp500_raw = yf.download("^GSPC", start=SP500_START_DATE, progress=False, auto_adjust=True)
+            if not sp500_raw.empty:
+                sp500 = sp500_raw[["Close"]].copy()
+                sp500.index = pd.to_datetime(sp500.index).tz_localize(None).normalize() + pd.Timedelta(hours=16, minutes=30)
+                sp500.columns = ["close"]
+                sp500 = ensure_today_bar(sp500, "^GSPC")
+                start_price = sp500.iloc[0]["close"]
+                sp500["growth"] = (sp500["close"] / start_price - 1) * 100
+                fig.add_scatter(x=sp500.index, y=sp500["growth"], mode="lines", name="S&P 500", line=dict(color="gray", dash="dot", width=2))
+        except: pass
+
+        # Bitcoin
+        try:
+            btc_raw = yf.download("BTC-USD", start=SP500_START_DATE, progress=False, auto_adjust=True)
+            if not btc_raw.empty:
+                btc = btc_raw[["Close"]].copy()
+                btc.index = pd.to_datetime(btc.index).tz_localize(None).normalize() + pd.Timedelta(hours=16, minutes=30)
+                btc.columns = ["close"]
+                btc = ensure_today_bar(btc, "BTC-USD")
+                start_price = btc.iloc[0]["close"]
+                btc["growth"] = (btc["close"] / start_price - 1) * 100
+                fig.add_scatter(x=btc.index, y=btc["growth"], mode="lines", name="Bitcoin", line=dict(color="orange", dash="dot", width=2))
+        except: pass
+
+        # USD/KRW
+        try:
+            usd_raw = yf.download("USDKRW=X", start=SP500_START_DATE, progress=False, auto_adjust=True)
+            if not usd_raw.empty:
+                usd = usd_raw[["Close"]].copy()
+                usd.index = pd.to_datetime(usd.index).tz_localize(None).normalize() + pd.Timedelta(hours=16, minutes=30)
+                usd.columns = ["close"]
+                usd = ensure_today_bar(usd, "USDKRW=X")
+                start_price = usd.iloc[0]["close"]
+                usd["growth"] = (usd["close"] / start_price - 1) * 100
+                fig.add_scatter(x=usd.index, y=usd["growth"], mode="lines", name="USD/KRW", line=dict(color="green", dash="dot", width=2))
+        except: pass
+
         fig.add_hline(y=0.0, line_dash="dash", line_color="lightgray")
         st.plotly_chart(fig, use_container_width=True)
+
+        # 3. Volatility Comparison Table
+        st.divider()
+        st.subheader("변동성 비교 📊")
+        volatility_rows = []
+
+        for name in df['name'].unique():
+            user_df = df[df['name'] == name].sort_values('date')
+            latest_growth = (user_df.iloc[-1]['growth_rate'] - 1) * 100
+            if len(user_df) < 2:
+                volatility_rows.append({"이름": name, "현재 수익률": f"{latest_growth:+.2f}%", "일일수익률": "N/A", "변동성 (std)": "N/A", "MDD": "N/A", "_growth": latest_growth})
+                continue
+            daily_returns = user_df['growth_rate'].pct_change().dropna()
+            volatility = daily_returns.std() * 100
+            cumulative = user_df['growth_rate']
+            mdd = ((cumulative - cumulative.cummax()) / cumulative.cummax()).min() * 100
+            daily_return = (user_df.iloc[-1]['amount'] / user_df.iloc[-2]['amount'] - 1) * 100
+            volatility_rows.append({"이름": name, "현재 수익률": f"{latest_growth:+.2f}%", "일일수익률": f"{daily_return:+.2f}%", "변동성 (std)": f"{volatility:.2f}%", "MDD": f"{mdd:.2f}%", "_growth": latest_growth})
+
+        if volatility_rows:
+            vol_df = pd.DataFrame(volatility_rows).sort_values("_growth", ascending=False)
+            vol_df = vol_df.drop(columns=["_growth"])
+            st.table(vol_df.reset_index(drop=True))
 else:
-    st.info("데이터가 없습니다. 메인 시스템에서 잔고를 DB에 저장해야 합니다.")
+    st.info("데이터가 없습니다.")
