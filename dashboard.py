@@ -3,14 +3,14 @@ import pandas as pd
 import os
 import plotly.express as px
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 # 페이지 설정
 st.set_page_config(page_title="수익률 대시보드", page_icon="📈", layout="wide")
 
-# 설정
-BASELINE_DATE = pd.Timestamp("2026-05-15")
+# 설정 - 사용자가 지정한 첫 기록일(5/16)로 기준점 변경
+BASELINE_DATE = pd.Timestamp("2026-05-16")
 
 st.title("🎢 수익률 페스티벌")
 st.subheader("누가 가장 많이 벌었을까요? :)")
@@ -22,6 +22,7 @@ def get_market_close_time_kst(dt):
     try:
         et_tz = pytz.timezone('US/Eastern')
         kst_tz = pytz.timezone('Asia/Seoul')
+        # 미국 장 마감 16:00 + 1시간 = 17:00 (ET)
         et_time = et_tz.localize(datetime(dt.year, dt.month, dt.day, 17, 0, 0))
         kst_time = et_time.astimezone(kst_tz)
         return kst_time
@@ -43,41 +44,48 @@ except:
 @st.cache_data(ttl=3600)
 def fetch_comparison(ticker, name, start_date):
     try:
+        # 기준일보다 며칠 전부터 가져와서 기준일 데이터를 확보
         fetch_start = start_date - pd.Timedelta(days=5)
-        # auto_adjust=True 와 MultiIndex 처리
         raw = yf.download(ticker, start=fetch_start.strftime("%Y-%m-%d"), progress=False, auto_adjust=True)
         if raw.empty: return pd.DataFrame()
         
-        # yfinance 최신 버전에서는 MultiIndex로 올 수 있으므로 'Close' 컬럼만 추출
+        # 'Close' 데이터 추출
         if "Close" in raw.columns:
             data = raw["Close"]
         else:
-            # MultiIndex 케이스 (Price, Ticker)
             data = raw.xs('Close', axis=1, level=0)
             
-        # Series인 경우 DataFrame으로 변환
         if isinstance(data, pd.Series):
             data = data.to_frame()
             
-        # 첫 번째 컬럼(해당 티커)만 사용
         close_prices = data.iloc[:, 0]
         
         new_rows = []
         for dt, price in close_prices.items():
+            # US 날짜 dt의 장 마감 + 1시간 KST 계산
             kst_close = get_market_close_time_kst(dt)
+            # 미래 날짜는 제외 (주말 등 처리)
+            if kst_close.tz_localize(None) > datetime.now():
+                continue
             new_rows.append({"amount": float(price), "name": name, "date": kst_close})
         
         res = pd.DataFrame(new_rows)
-        # 현재 실시간 가격 추가
-        ticker_obj = yf.Ticker(ticker)
-        last_price = ticker_obj.fast_info.last_price
-        if last_price:
-            today_close = get_market_close_time_kst(datetime.now())
-            if today_close > res["date"].max():
-                res = pd.concat([res, pd.DataFrame([{"amount": float(last_price), "name": name, "date": today_close}])])
+        
+        # 현재 장 중인 경우 실시간 가격 추가 (주말 제외)
+        now = datetime.now()
+        # 주말(토, 일) 체크 - 토요일 오전까지는 금요일 장 데이터가 최신임
+        if now.weekday() < 5 or (now.weekday() == 5 and now.hour < 7): # 월~금 또는 토요일 새벽
+            ticker_obj = yf.Ticker(ticker)
+            last_price = ticker_obj.fast_info.last_price
+            if last_price:
+                # 가장 최근 ET 영업일 기준 KST 장마감 시간
+                today_close = get_market_close_time_kst(now)
+                # 이미 리스트에 있는 시간보다 나중이고, 현재 시간보다는 전일 때만 추가
+                if today_close > res["date"].max() and today_close.tz_localize(None) <= now:
+                    res = pd.concat([res, pd.DataFrame([{"amount": float(last_price), "name": name, "date": today_close}])])
+        
         return res
     except Exception as e:
-        st.error(f"{name} 데이터를 가져오는 중 오류 발생: {e}")
         return pd.DataFrame()
 
 # 데이터 로드
@@ -102,11 +110,14 @@ for ticker, name in comparison_list:
 if all_dfs:
     df = pd.concat(all_dfs, ignore_index=True)
     df['name'] = df['name'].astype(str).str.strip()
+    
+    # 기준일(5/16) 이후 데이터만 사용
     df = df[df['date'].dt.tz_localize(None) >= BASELINE_DATE].copy()
     
     if df.empty:
-        st.warning("기준일(2026-05-15) 이후의 데이터가 없습니다.")
+        st.warning("기준일(2026-05-16) 이후의 데이터가 없습니다.")
     else:
+        # 수익률 계산
         baselines = {}
         for name in df['name'].unique():
             sub = df[df['name'] == name].sort_values('date')
@@ -146,10 +157,13 @@ if all_dfs:
         st.divider()
         st.subheader("🏎️ 수익률 레이스")
         df_chart_data = df.copy()
-        start_date = df_chart_data['date'].min() - pd.Timedelta(days=1)
+        
+        # 시작점 설정
+        first_date = df_chart_data['date'].min()
         start_points = []
         for name in df_chart_data['name'].unique():
-            start_points.append({'name': name, 'date': start_date, 'amount': baselines.get(name, 0), 'growth_rate': 1.0, 'growth_rate_pct': 0.0})
+            start_points.append({'name': name, 'date': first_date - pd.Timedelta(minutes=1), 'amount': baselines.get(name, 0), 'growth_rate': 1.0, 'growth_rate_pct': 0.0})
+        
         df_chart = pd.concat([pd.DataFrame(start_points), df_chart_data], ignore_index=True).sort_values(by='date')
         df_chart['이름'] = df_chart['name'].apply(get_display_name)
         fig = px.line(df_chart, x='date', y='growth_rate_pct', color='이름', markers=True, title="시간 경과에 따른 수익률 비교", labels={'growth_rate_pct': '수익률 (%)', 'date': '날짜', '이름': '참가자'})
