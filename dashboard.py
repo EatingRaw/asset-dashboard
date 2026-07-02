@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import os
 import plotly.express as px
@@ -8,6 +9,30 @@ import pytz
 
 # 페이지 설정
 st.set_page_config(page_title="수익률 대시보드", page_icon="📈", layout="wide")
+
+# 절전모드 방지: Wake Lock + 자동 새로고침
+components.html("""
+<script>
+    // 5분마다 자동 새로고침 (Streamlit Cloud 절전 방지)
+    setTimeout(function() {
+        window.parent.location.reload();
+    }, 300000);
+
+    // Wake Lock API (브라우저 탭 절전/화면 꺼짐 방지)
+    let wakeLock = null;
+    async function requestWakeLock() {
+        try {
+            if ('wakeLock' in navigator) {
+                wakeLock = await navigator.wakeLock.request('screen');
+            }
+        } catch (err) {}
+    }
+    requestWakeLock();
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') requestWakeLock();
+    });
+</script>
+""", height=0)
 
 # 기준일 설정
 BASELINE_DATE = pd.Timestamp("2026-05-15")
@@ -20,7 +45,6 @@ import sqlite3
 # US 거래일을 KST 오전 시간으로 변환 (거래일 + 1일 오전 6시)
 def convert_us_date_to_kst(us_date):
     try:
-        # us_date는 거래 종료일. KST로는 그 다음날 오전임.
         kst_date = pd.to_datetime(us_date) + pd.Timedelta(hours=6)
         return kst_date
     except:
@@ -30,7 +54,15 @@ def convert_us_date_to_kst(us_date):
 try:
     if os.path.exists("assets.db"):
         conn = sqlite3.connect("assets.db")
-        df_user = pd.read_sql_query("SELECT * FROM assets", conn)
+        # purchase_amount 컬럼 존재 여부 확인
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(assets)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "purchase_amount" in columns:
+            df_user = pd.read_sql_query("SELECT * FROM assets", conn)
+        else:
+            df_user = pd.read_sql_query("SELECT * FROM assets", conn)
+            df_user['purchase_amount'] = 0
         conn.close()
     else:
         df_user = pd.DataFrame()
@@ -63,11 +95,10 @@ def fetch_comparison(ticker, name, start_date):
     except:
         return pd.DataFrame()
 
-# 데이터 로드
+# 데이터 로드 (원화 비교 항목 제거)
 comparison_list = [
     ("VOO", "S&P 500 (VOO)"),
     ("BTC-USD", "비트코인"),
-    ("USDKRW=X", "USD/KRW 환율")
 ]
 
 all_dfs = []
@@ -113,6 +144,61 @@ if all_dfs:
             if n == turtle_name: return f"🐢 {n}"
             return n
 
+        # 시작 자산 / 계좌 수익률 표시 (사용자 데이터가 있을 경우)
+        user_names = df_user['name'].unique() if not df_user.empty else []
+        for uname in user_names:
+            uname = str(uname).strip()
+            if uname in baselines:
+                initial_amount = baselines[uname]
+                # 최신 금액
+                user_latest = latest_all[latest_all['name'] == uname]
+                if not user_latest.empty:
+                    current_amount = user_latest.iloc[0]['amount']
+                    growth_pct = user_latest.iloc[0]['growth_rate_pct']
+                    
+                    # 매입금액 기반 계좌 수익률 (한투앱과 동일)
+                    latest_purchase = 0
+                    if not df_user.empty and 'purchase_amount' in df_user.columns:
+                        user_sorted = df_user[df_user['name'] == uname].sort_values('date')
+                        if not user_sorted.empty:
+                            latest_purchase = user_sorted.iloc[-1].get('purchase_amount', 0)
+                    
+                    info_cols = st.columns(4)
+                    with info_cols[0]:
+                        st.metric(
+                            label="💰 시작 자산",
+                            value=f"${initial_amount:,.2f}",
+                            help=f"기준일: {BASELINE_DATE.strftime('%Y/%m/%d')}"
+                        )
+                    with info_cols[1]:
+                        st.metric(
+                            label="📊 현재 자산",
+                            value=f"${current_amount:,.2f}",
+                            delta=f"${current_amount - initial_amount:+,.2f}"
+                        )
+                    with info_cols[2]:
+                        st.metric(
+                            label="📈 자산 변동률",
+                            value=f"{growth_pct:+.2f}%",
+                            help=f"{BASELINE_DATE.strftime('%m/%d')} 대비"
+                        )
+                    with info_cols[3]:
+                        if latest_purchase > 0:
+                            acct_return = ((current_amount - latest_purchase) / latest_purchase) * 100
+                            st.metric(
+                                label="🏦 계좌 수익률",
+                                value=f"{acct_return:+.2f}%",
+                                delta=f"${current_amount - latest_purchase:+,.2f}",
+                                help="매입금액 대비 (한투앱 기준)"
+                            )
+                        else:
+                            st.metric(
+                                label="🏦 계좌 수익률",
+                                value="--",
+                                help="매입금액 데이터 수집 중"
+                            )
+                    st.divider()
+
         st.subheader("🏆 리더보드")
         cols = st.columns(len(latest_all))
         for i, (idx, row) in enumerate(latest_all.iterrows()):
@@ -120,19 +206,22 @@ if all_dfs:
                 baseline = baselines.get(row['name'], row['amount'])
                 net_change = row['amount'] - baseline
                 label = get_display_name(row['name'])
-                if "S&P 500" in row['name'] or "비트코인" in row['name']:
-                    delta_val = f"{net_change:+.2f} USD"
-                elif "USD/KRW" in row['name']:
-                    delta_val = f"{net_change:+.2f} KRW"
-                else:
-                    delta_val = f"${net_change:+.2f} USD"
+                delta_val = f"${net_change:+.2f}"
                 st.metric(label=label, value=f"{row['growth_rate_pct']:.2f}%", delta=delta_val, help=f"최종 기록: {row['date'].strftime('%m/%d %H:%M')}")
 
         st.divider()
         st.subheader("🏎️ 수익률 레이스")
         df_chart = df.sort_values(by='date')
         df_chart['참가자'] = df_chart['name'].apply(get_display_name)
-        fig = px.line(df_chart, x='date', y='growth_rate_pct', color='참가자', markers=True, title="수익률 추이 (5/15 ~ 5/16)", labels={'growth_rate_pct': '수익률 (%)', 'date': '날짜'})
+        
+        # 차트 제목 동적 생성
+        min_date = df_chart['date'].min()
+        max_date = df_chart['date'].max()
+        start_date_str = min_date.strftime('%m/%d') if not pd.isna(min_date) else ""
+        end_date_str = max_date.strftime('%m/%d') if not pd.isna(max_date) else ""
+        chart_title = f"수익률 추이 ({start_date_str} ~ {end_date_str})"
+        
+        fig = px.line(df_chart, x='date', y='growth_rate_pct', color='참가자', markers=True, title=chart_title, labels={'growth_rate_pct': '수익률 (%)', 'date': '날짜'})
         fig.update_layout(yaxis_ticksuffix="%")
         st.plotly_chart(fig, use_container_width=True)
 
