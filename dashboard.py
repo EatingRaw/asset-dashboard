@@ -42,6 +42,13 @@ st.subheader("누가 가장 많이 벌었을까요? :)")
 
 import sqlite3
 
+# 달러 delta 포맷 (부호를 $ 앞에 배치: -$53.13)
+def fmt_delta(val):
+    if val >= 0:
+        return f"+${val:,.2f}"
+    else:
+        return f"-${abs(val):,.2f}"
+
 # US 거래일을 KST 오전 시간으로 변환 (거래일 + 1일 오전 6시)
 def convert_us_date_to_kst(us_date):
     try:
@@ -160,13 +167,13 @@ if all_dfs:
                         st.metric(
                             label="📊 현재 자산",
                             value=f"${current_amount:,.2f}",
-                            delta=f"${net_change:+,.2f}"
+                            delta=fmt_delta(net_change)
                         )
                     with info_cols[2]:
                         st.metric(
                             label="📈 계좌 수익률",
                             value=f"{growth_pct:+.2f}%",
-                            delta=f"${net_change:+,.2f}",
+                            delta=fmt_delta(net_change),
                             help=f"기준일({BASELINE_DATE.strftime('%m/%d')}) 대비"
                         )
                     st.divider()
@@ -178,7 +185,7 @@ if all_dfs:
                 baseline = baselines.get(row['name'], row['amount'])
                 net_change = row['amount'] - baseline
                 label = get_display_name(row['name'])
-                delta_val = f"${net_change:+.2f}"
+                delta_val = fmt_delta(net_change)
                 st.metric(label=label, value=f"{row['growth_rate_pct']:.2f}%", delta=delta_val, help=f"최종 기록: {row['date'].strftime('%m/%d %H:%M')}")
 
         st.divider()
