@@ -54,15 +54,7 @@ def convert_us_date_to_kst(us_date):
 try:
     if os.path.exists("assets.db"):
         conn = sqlite3.connect("assets.db")
-        # purchase_amount 컬럼 존재 여부 확인
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(assets)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if "purchase_amount" in columns:
-            df_user = pd.read_sql_query("SELECT * FROM assets", conn)
-        else:
-            df_user = pd.read_sql_query("SELECT * FROM assets", conn)
-            df_user['purchase_amount'] = 0
+        df_user = pd.read_sql_query("SELECT * FROM assets", conn)
         conn.close()
     else:
         df_user = pd.DataFrame()
@@ -155,15 +147,9 @@ if all_dfs:
                 if not user_latest.empty:
                     current_amount = user_latest.iloc[0]['amount']
                     growth_pct = user_latest.iloc[0]['growth_rate_pct']
+                    net_change = current_amount - initial_amount
                     
-                    # 매입금액 기반 계좌 수익률 (한투앱과 동일)
-                    latest_purchase = 0
-                    if not df_user.empty and 'purchase_amount' in df_user.columns:
-                        user_sorted = df_user[df_user['name'] == uname].sort_values('date')
-                        if not user_sorted.empty:
-                            latest_purchase = user_sorted.iloc[-1].get('purchase_amount', 0)
-                    
-                    info_cols = st.columns(4)
+                    info_cols = st.columns(3)
                     with info_cols[0]:
                         st.metric(
                             label="💰 시작 자산",
@@ -174,29 +160,15 @@ if all_dfs:
                         st.metric(
                             label="📊 현재 자산",
                             value=f"${current_amount:,.2f}",
-                            delta=f"${current_amount - initial_amount:+,.2f}"
+                            delta=f"${net_change:+,.2f}"
                         )
                     with info_cols[2]:
                         st.metric(
-                            label="📈 자산 변동률",
+                            label="📈 계좌 수익률",
                             value=f"{growth_pct:+.2f}%",
-                            help=f"{BASELINE_DATE.strftime('%m/%d')} 대비"
+                            delta=f"${net_change:+,.2f}",
+                            help=f"기준일({BASELINE_DATE.strftime('%m/%d')}) 대비"
                         )
-                    with info_cols[3]:
-                        if latest_purchase > 0:
-                            acct_return = ((current_amount - latest_purchase) / latest_purchase) * 100
-                            st.metric(
-                                label="🏦 계좌 수익률",
-                                value=f"{acct_return:+.2f}%",
-                                delta=f"${current_amount - latest_purchase:+,.2f}",
-                                help="매입금액 대비 (한투앱 기준)"
-                            )
-                        else:
-                            st.metric(
-                                label="🏦 계좌 수익률",
-                                value="--",
-                                help="매입금액 데이터 수집 중"
-                            )
                     st.divider()
 
         st.subheader("🏆 리더보드")
