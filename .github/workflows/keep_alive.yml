@@ -1,0 +1,28 @@
+name: Keep Streamlit Awake
+
+on:
+  schedule:
+    # Runs every 12 hours to prevent hibernation
+    - cron: '0 */12 * * *'
+  workflow_dispatch: # Allows manual run from GitHub UI
+
+jobs:
+  keep_alive:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Push empty commit to trigger deployment
+        run: |
+          git commit --allow-empty -m "Keep alive: auto-redeploy to prevent sleep"
+          git push origin main
