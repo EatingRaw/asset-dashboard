@@ -3,9 +3,7 @@ import streamlit.components.v1 as components
 import pandas as pd
 import os
 import plotly.express as px
-import yfinance as yf
 from datetime import datetime
-import pytz
 
 # 페이지 설정
 st.set_page_config(page_title="수익률 대시보드", page_icon="📈", layout="wide")
@@ -57,7 +55,7 @@ def convert_us_date_to_kst(us_date):
     except:
         return us_date
 
-# 사용자 데이터 불러오기
+# 사용자 데이터 불러오기 (YJ_US, VOO, 비트코인 모두 DB에서)
 try:
     if os.path.exists("assets.db"):
         conn = sqlite3.connect("assets.db")
@@ -68,51 +66,13 @@ try:
 except:
     df_user = pd.DataFrame()
 
-# 비교 데이터 불러오기 함수
-@st.cache_data(ttl=600)
-def fetch_comparison(ticker, name, start_date):
-    try:
-        fetch_start = start_date - pd.Timedelta(days=5)
-        raw = yf.download(ticker, start=fetch_start.strftime("%Y-%m-%d"), progress=False, auto_adjust=True)
-        if raw.empty: return pd.DataFrame()
-        
-        data = raw["Close"]
-        if not isinstance(data, pd.Series):
-            data = data.iloc[:, 0]
-            
-        new_rows = []
-        now_kst = datetime.now(pytz.timezone('Asia/Seoul')).replace(tzinfo=None)
-        
-        for dt, price in data.items():
-            # US 거래일 dt -> KST 다음날 오전 6시
-            kst_time = pd.to_datetime(dt) + pd.Timedelta(days=1, hours=6)
-            if kst_time > now_kst:
-                continue
-            new_rows.append({"amount": float(price), "name": name, "date": kst_time})
-        
-        return pd.DataFrame(new_rows)
-    except:
-        return pd.DataFrame()
-
-# 데이터 로드 (원화 비교 항목 제거)
-comparison_list = [
-    ("VOO", "S&P 500 (VOO)"),
-    ("BTC-USD", "비트코인"),
-]
-
 all_dfs = []
 
-# 1. 사용자 데이터 처리 (DB 날짜를 그대로 사용하되 오전 6시로 설정)
+# DB 데이터 처리 (모든 항목이 동일 시점에 기록됨)
 if not df_user.empty:
     df_user['date'] = pd.to_datetime(df_user['date']) + pd.Timedelta(hours=6)
     df_user = df_user.sort_values('date').drop_duplicates(subset=['name', 'date'], keep='last')
     all_dfs.append(df_user[['name', 'date', 'amount']])
-
-# 2. 비교 데이터 처리
-for ticker, name in comparison_list:
-    comp_df = fetch_comparison(ticker, name, BASELINE_DATE)
-    if not comp_df.empty:
-        all_dfs.append(comp_df[['name', 'date', 'amount']])
 
 if all_dfs:
     df = pd.concat(all_dfs, ignore_index=True)
