@@ -103,8 +103,8 @@ if all_dfs:
             if n == turtle_name: return f"🐢 {n}"
             return n
 
-        # 시작 자산 / 계좌 수익률 표시 (사용자 데이터가 있을 경우)
-        user_names = df_user['name'].unique() if not df_user.empty else []
+        # 시작 자산 / 계좌 수익률 표시 (내 계좌만)
+        user_names = [n for n in df_user['name'].unique() if n == 'YJ_US'] if not df_user.empty else []
         for uname in user_names:
             uname = str(uname).strip()
             if uname in baselines:
