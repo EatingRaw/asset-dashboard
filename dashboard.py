@@ -1,44 +1,51 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
 import os
-import plotly.express as px
-from datetime import datetime
+import sqlite3
+import traceback
+
+try:
+    import plotly.express as px
+    HAS_PLOTLY = True
+except ImportError:
+    HAS_PLOTLY = False
 
 # 페이지 설정
 st.set_page_config(page_title="수익률 대시보드", page_icon="📈", layout="wide")
 
-# 절전모드 방지: Wake Lock + 자동 새로고침
-components.html("""
-<script>
-    // 5분마다 자동 새로고침 (Streamlit Cloud 절전 방지)
-    setTimeout(function() {
-        window.parent.location.reload();
-    }, 300000);
+# 절전모드 방지: 자동 새로고침
+try:
+    import streamlit.components.v1 as components
+    components.html("""
+    <script>
+        // 5분마다 자동 새로고침 (Streamlit Cloud 절전 방지)
+        setTimeout(function() {
+            window.parent.location.reload();
+        }, 300000);
 
-    // Wake Lock API (브라우저 탭 절전/화면 꺼짐 방지)
-    let wakeLock = null;
-    async function requestWakeLock() {
-        try {
-            if ('wakeLock' in navigator) {
-                wakeLock = await navigator.wakeLock.request('screen');
-            }
-        } catch (err) {}
-    }
-    requestWakeLock();
-    document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') requestWakeLock();
-    });
-</script>
-""", height=0)
+        // Wake Lock API (브라우저 탭 절전/화면 꺼짐 방지)
+        let wakeLock = null;
+        async function requestWakeLock() {
+            try {
+                if ('wakeLock' in navigator) {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                }
+            } catch (err) {}
+        }
+        requestWakeLock();
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') requestWakeLock();
+        });
+    </script>
+    """, height=0)
+except Exception:
+    pass  # components.html 실패해도 앱은 계속 실행
 
 # 기준일 설정
 BASELINE_DATE = pd.Timestamp("2026-05-15")
 
 st.title("🎢 수익률 페스티벌")
 st.subheader("누가 가장 많이 벌었을까요? :)")
-
-import sqlite3
 
 # 달러 delta 포맷 (부호를 $ 앞에 배치: -$53.13)
 def fmt_delta(val):
@@ -52,18 +59,21 @@ def convert_us_date_to_kst(us_date):
     try:
         kst_date = pd.to_datetime(us_date) + pd.Timedelta(hours=6)
         return kst_date
-    except:
+    except Exception:
         return us_date
 
-# 사용자 데이터 불러오기 (YJ_US, VOO, 비트코인 모두 DB에서)
+# 사용자 데이터 불러오기
 try:
-    if os.path.exists("assets.db"):
-        conn = sqlite3.connect("assets.db")
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets.db")
+    if os.path.exists(db_path):
+        conn = sqlite3.connect(db_path)
         df_user = pd.read_sql_query("SELECT * FROM assets", conn)
         conn.close()
     else:
+        st.error(f"데이터베이스 파일을 찾을 수 없습니다: {db_path}")
         df_user = pd.DataFrame()
-except:
+except Exception as e:
+    st.error(f"데이터 로딩 오류: {e}")
     df_user = pd.DataFrame()
 
 all_dfs = []
@@ -160,9 +170,12 @@ if all_dfs:
         end_date_str = max_date.strftime('%m/%d') if not pd.isna(max_date) else ""
         chart_title = f"수익률 추이 ({start_date_str} ~ {end_date_str})"
         
-        fig = px.line(df_chart, x='date', y='growth_rate_pct', color='참가자', markers=True, title=chart_title, labels={'growth_rate_pct': '수익률 (%)', 'date': '날짜'})
-        fig.update_layout(yaxis_ticksuffix="%")
-        st.plotly_chart(fig, use_container_width=True)
+        if HAS_PLOTLY:
+            fig = px.line(df_chart, x='date', y='growth_rate_pct', color='참가자', markers=True, title=chart_title, labels={'growth_rate_pct': '수익률 (%)', 'date': '날짜'})
+            fig.update_layout(yaxis_ticksuffix="%")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.line_chart(df_chart.pivot(index='date', columns='참가자', values='growth_rate_pct'))
 
         st.subheader("📊 종합 변동성 분석")
         vol_rows = []
